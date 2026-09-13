@@ -70,5 +70,5 @@ jobs:
         run: python notify_bark.py
         env:
           BARK_URL: ${{ secrets.BARK_URL }}
-          BARK_REASON: ${{ failure() && 'failure' || inputs.bark_test == true && 'test' || 'renewal' }}
+          BARK_REASON: ${{ job.status == 'failure' && 'failure' || inputs.bark_test == true && 'test' || 'renewal' }}
           RENEWAL_WARNING: ${{ steps.checkin.outputs.renewal_warning }}
