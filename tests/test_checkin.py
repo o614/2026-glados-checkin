@@ -67,9 +67,11 @@ class FakeGLaDOS:
 
     def get_status(self):
         self.refresh_calls += 1
+        return True
 
     def get_points(self):
         self.refresh_calls += 1
+        return True
 
 
 class ExchangePlanTests(unittest.TestCase):

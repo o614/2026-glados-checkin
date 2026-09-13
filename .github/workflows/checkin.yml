@@ -6,6 +6,11 @@ on:
     - cron: '30 1 * * *'
   workflow_dispatch:
     inputs:
+      bark_test:
+        description: 仅发送 Bark 测试通知（不执行签到或兑换）
+        required: false
+        default: false
+        type: boolean
       dispatch_source:
         description: 手动运行请选择 manual；外部定时器可不填（默认按 external）
         required: false
@@ -45,6 +50,8 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run Checkin
+        id: checkin
+        if: inputs.bark_test != true
         run: python checkin.py
         timeout-minutes: 8
         env:
@@ -56,3 +63,12 @@ jobs:
           EXCHANGE_PLAN: ${{ vars.EXCHANGE_PLAN || 'plan500' }}
           CHECKIN_MAX_ATTEMPTS: '3'
           CHECKIN_RETRY_DELAY_SECONDS: '60'
+
+      - name: Notify Bark on failure or renewal risk
+        if: ${{ !cancelled() && (failure() || inputs.bark_test == true || steps.checkin.outputs.renewal_warning != '') }}
+        timeout-minutes: 1
+        run: python notify_bark.py
+        env:
+          BARK_URL: ${{ secrets.BARK_URL }}
+          BARK_REASON: ${{ failure() && 'failure' || inputs.bark_test == true && 'test' || 'renewal' }}
+          RENEWAL_WARNING: ${{ steps.checkin.outputs.renewal_warning }}

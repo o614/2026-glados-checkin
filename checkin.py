@@ -14,6 +14,7 @@
 
 import html
 import json
+import math
 import os
 import sys
 import time
@@ -142,10 +143,14 @@ class GLaDOS:
         self.exchange_info = ""
         self.exchange_result = ""
         self.plan = "?"
+        self.available_plans = {}
 
     def req(self, method, path, data=None, form=False):
         """带自动域名切换的请求；form=True 时以表单提交（兑换接口要求）"""
-        for d in DOMAINS:
+        # A timed-out exchange may already have spent points. Never replay it
+        # against another domain; query the refreshed balance on the next run.
+        domains = [self.domain] if path == '/api/user/exchange' else DOMAINS
+        for d in domains:
             try:
                 url = f"{d}{path}"
                 h = HEADERS.copy()
@@ -157,7 +162,7 @@ class GLaDOS:
                     # 表单提交交给 requests 自动设置 Content-Type，
                     # 手动预设 JSON 头会被兑换接口拒绝。
                     h.pop('Content-Type', None)
-                    resp = requests.post(url, headers=h, data=data, timeout=10)
+                    resp = requests.post(url, headers=h, data=data, timeout=10, allow_redirects=False)
                 elif method == 'GET':
                     resp = requests.get(url, headers=h, timeout=10)
                 else:
@@ -168,7 +173,8 @@ class GLaDOS:
                     return resp.json()
                 log(f"⚠️ {d} 返回 HTTP {resp.status_code}")
             except (requests.RequestException, ValueError) as e:
-                log(f"⚠️ {d} 请求失败: {e}")
+                # Invalid-header exceptions can include the Cookie itself.
+                log(f"⚠️ {d} 请求失败: {type(e).__name__}")
                 continue
         return None
 
@@ -178,7 +184,7 @@ class GLaDOS:
         if res and 'data' in res:
             d = res['data']
             self.email = d.get('email', 'Unknown')
-            self.left_days = str(d.get('leftDays', '?')).split('.')[0]
+            self.left_days = str(d.get('leftDays', '?'))
             return True
         return False
 
@@ -200,9 +206,10 @@ class GLaDOS:
             
             # 兑换计划
             plans = res.get('plans', {})
+            self.available_plans = valid_exchange_plans(plans)
             pts = int(float(self.points))
             exchange_lines = []
-            for plan_data in plans.values():
+            for plan_data in self.available_plans.values():
                 need = int(plan_data.get('points', 0))
                 days = plan_data.get('days', '?')
                 if pts >= need:
@@ -228,15 +235,74 @@ def get_exchange_plan():
     raw = os.environ.get("EXCHANGE_PLAN", "plan500").strip().lower()
     if raw in EXCHANGE_DISABLED_VALUES:
         return None
-    if raw in EXCHANGE_PLANS:
+    if raw in EXCHANGE_PLANS or raw == 'smart':
         return raw
-    log(f"⚠️ EXCHANGE_PLAN 值 '{raw}' 无效 (可选: {'/'.join(EXCHANGE_PLANS)}/off)，本次跳过兑换")
+    log(f"⚠️ EXCHANGE_PLAN 无效 (可选: smart/{'/'.join(EXCHANGE_PLANS)}/off)，本次跳过兑换")
     return None
+
+
+def valid_exchange_plans(plans):
+    """Only use recognized plan IDs and positive, finite server prices."""
+    valid = {}
+    if not isinstance(plans, dict):
+        return valid
+    for plan_id, data in plans.items():
+        if plan_id not in EXCHANGE_PLANS or not isinstance(data, dict):
+            continue
+        try:
+            points, days = float(data['points']), float(data['days'])
+            if (math.isfinite(points) and math.isfinite(days)
+                    and points > 0 and points.is_integer() and days > 0):
+                valid[plan_id] = {'points': int(points), 'days': days}
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return valid
+
+
+def smart_exchange_plan(g, reserve_days=14):
+    """Renew before expiry; save for the best value only with a time buffer."""
+    points, days = float(g.points), float(g.left_days)
+    if not math.isfinite(points) or not math.isfinite(days) or points < 0:
+        raise ValueError('Invalid balance')
+    plans = valid_exchange_plans(g.available_plans)
+    if not plans:
+        raise ValueError('Missing current exchange plans')
+    ranked = sorted(plans, key=lambda p: (plans[p]['days'] / plans[p]['points'],
+                                         plans[p]['days']), reverse=True)
+    affordable = [p for p in ranked if plans[p]['points'] <= points]
+    if not affordable:
+        return None
+    if days <= reserve_days or affordable[0] == ranked[0]:
+        return affordable[0]
+    return None
+
+
+def renewal_warning(g, alert_days=7):
+    """Warn about an approaching gap without estimating future daily rewards."""
+    try:
+        days, points = float(g.left_days), float(g.points)
+        plans = valid_exchange_plans(g.available_plans)
+        if (math.isfinite(days) and math.isfinite(points) and plans
+                and days <= alert_days
+                and points < min(p['points'] for p in plans.values())):
+            return f'剩余 {days:g} 天、积分 {points:g}，不足以兑换最小档位，请及时处理续期。'
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return ''
 
 
 def auto_exchange(g, plan_id):
     """积分达标时自动兑换会员天数，返回用于推送的兑换说明"""
-    info = EXCHANGE_PLANS[plan_id]
+    if plan_id == 'smart':
+        try:
+            plan_id = smart_exchange_plan(g)
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return '⚠️ 智能兑换跳过(积分、天数或实时兑换档位查询异常)'
+        if plan_id is None:
+            return '⏭️ 智能兑换等待：积分不足，或剩余时间充裕、继续积攒高性价比档位'
+        info = valid_exchange_plans(g.available_plans)[plan_id]
+    else:
+        info = EXCHANGE_PLANS[plan_id]
     need, days = info["points"], info["days"]
 
     try:
@@ -252,8 +318,10 @@ def auto_exchange(g, plan_id):
     if res and res.get('code') == 0:
         log(f"🎁 自动兑换成功: {need}分 → +{days}天")
         # 兑换消耗积分、增加天数，刷新后推送里才是最新数据
-        g.get_status()
-        g.get_points()
+        status_ok = g.get_status()
+        points_ok = g.get_points()
+        if not status_ok or not points_ok:
+            return '⚠️ 兑换接口返回成功，但余额刷新失败；不要手动重复兑换，请先核对账户'
         return f"🎁 兑换成功 +{days}天 (消耗{need}分)"
 
     err = res.get('message', 'Failure') if res else "Network Error"
@@ -336,7 +404,9 @@ def main():
         return 1
 
     exchange_plan = get_exchange_plan()
-    if exchange_plan:
+    if exchange_plan == 'smart':
+        log('🎁 智能兑换已启用：14 天续期缓冲，使用实时兑换档位')
+    elif exchange_plan:
         plan = EXCHANGE_PLANS[exchange_plan]
         log(f"🎁 自动兑换已启用: {plan['points']}分 → {plan['days']}天 (EXCHANGE_PLAN={exchange_plan})")
     else:
@@ -345,6 +415,8 @@ def main():
     results = []
     success_cnt = 0
     exchange_events = 0
+    account_errors = 0
+    renewal_warnings = []
 
     for i, cookie in enumerate(cookies, 1):
         g = GLaDOS(cookie)
@@ -356,15 +428,27 @@ def main():
         msg = res.get('message', 'Failure') if res else "Network Error"
 
         # 2. Get Info (Refresh data)
-        g.get_status()
-        g.get_points()
+        status_ok = g.get_status()
+        points_ok = g.get_points()
+        has_error = not is_success or not status_ok or not points_ok
 
         # 2.5 Auto exchange (issue #11): runs after check-in so the
         # just-earned points count toward the threshold.
-        if exchange_plan:
+        if exchange_plan and is_success and status_ok and points_ok:
             g.exchange_result = auto_exchange(g, exchange_plan)
+            log(g.exchange_result)
+            if g.exchange_result.startswith('⚠️'):
+                has_error = True
             if not g.exchange_result.startswith("⏭️"):
                 exchange_events += 1
+        elif exchange_plan:
+            g.exchange_result = '⚠️ 签到或账户查询失败，跳过兑换'
+
+        account_errors += int(has_error)
+        warning = renewal_warning(g)
+        if warning:
+            renewal_warnings.append(f'账号 {i}: {warning}')
+            log(f'⚠️ 账号 {i}: {warning}')
 
         # 3. Log
         status_icon = "✅" if is_success else "❌"
@@ -399,7 +483,12 @@ def main():
 
     # Exchange outcomes (success or failure) are worth notifying even when
     # PUSH_LEVEL=fail_only, otherwise an always-failing exchange stays silent.
-    if push_level == "fail_only" and success_cnt == len(cookies) and exchange_events == 0:
+    # Fixed-format warning only: never put API responses or credentials in outputs.
+    if renewal_warnings and os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('renewal_warning=' + ' / '.join(renewal_warnings) + '\n')
+
+    if push_level == "fail_only" and account_errors == 0 and exchange_events == 0:
         log("⏭️ 根据 PUSH_LEVEL=fail_only 设置，所有账号签到成功，跳过推送")
         return 0
 
@@ -417,7 +506,7 @@ def main():
         if tg_token and tg_chat_id:
             telegram_push(tg_token, tg_chat_id, title, content)
 
-    return 0 if success_cnt == len(cookies) else 1
+    return 0 if account_errors == 0 else 1
 
 if __name__ == '__main__':
     sys.exit(main())

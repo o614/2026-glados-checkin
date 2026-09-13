@@ -33,3 +33,11 @@ jobs:
           git diff --staged --quiet || git commit -m "chore: keep repository active [skip ci]"
           git pull --rebase origin main
           git push
+
+      - name: Notify Bark on failure
+        if: failure()
+        timeout-minutes: 1
+        run: python3 notify_bark.py
+        env:
+          BARK_URL: ${{ secrets.BARK_URL }}
+          BARK_REASON: failure

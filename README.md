@@ -1,5 +1,25 @@
 # 🎁 5 分钟配置 GLaDOS 自动签到
 
+## 本 Fork：智能续期与 Bark 错误通知
+
+在仓库 **Actions Variables** 中设置 `EXCHANGE_PLAN=smart` 启用智能兑换：
+
+- 使用 `/api/user/points` 返回的实时价格和天数，只选择项目已经支持的兑换计划。
+- 剩余 **14 天以内**：从买得起的档位中选择每积分兑换天数最多的一档，优先续上。
+- 剩余 **超过 14 天**：攒够当前最划算的档位再兑换，避免长期使用低效率档位。
+- 每次运行最多兑换一次；余额查询失败时不兑换，兑换超时不自动重放，防止重复扣分。
+- 剩余 **7 天以内且积分不够最小档位**：发送续期风险提醒。积分收入不足以覆盖续期成本时，自动化无法保证不断档。
+
+在仓库 **Actions Secrets** 中设置 `BARK_URL`，值为 Bark App 的 `https://服务器/设备密钥`（末尾 `/` 可保留）。真实地址不得写进源码、README 或命令参数。
+
+Bark 在签到重试全部失败、账户查询/兑换异常、工作流步骤失败或上述续期风险出现时发送通知；正常签到、重复签到和正常兑换保持静默。持续存在的续期风险会在每天运行时再次提醒。通知包含 Actions 链接，不包含 Cookie 或邮箱。月度保活失败也会提醒。
+
+测试通知：手动运行 `GLaDOS 2026 Checkin`，`dispatch_source` 选择 `manual`，勾选 `bark_test`；此模式仅运行测试并发送一条明确标注的 Bark 测试通知，不执行真实签到或兑换。
+
+仍使用每天北京时间 09:30 的 GitHub schedule。若 GitHub 没有启动整个任务、runner 无法启动或 checkout 失败，本任务内的通知不能保证送达；Bark 也不是独立的漏跑监控。随机执行时间不能保证规避网站的自动化检测，使用前应遵守网站规则。
+
+回退：将 `EXCHANGE_PLAN` 设为 `off` 可关闭兑换；`plan100`、`plan200`、`plan500` 仍支持固定档位。
+
 <div align="center">
 
 **你不用写代码 · 不用买服务器 · 不用每天登录**
@@ -154,10 +174,11 @@ GLaDOS 在 2026 年初进行了 API 更新，**绝大多数旧签到脚本已失
 | -------------------- | ----- | -------------------------------------------------------------------------- |
 | `GLADOS_COOKIE`      | ✅ 是 | GLaDOS 的 Cookie。多个账号请用 `&` 或换行符分隔。                          |
 | `PUSHPLUS_TOKEN`     | ❌ 否 | PushPlus 微信推送 Token。                                                  |
+| `BARK_URL`           | ❌ 否 | Bark HTTPS 服务器地址/设备密钥，放 Actions Secrets；仅异常、续期风险或显式测试时通知。 |
 | `TELEGRAM_BOT_TOKEN` | ❌ 否 | Telegram 机器人的 Token（例如 `123456:ABC-DEF1234...`）                    |
 | `TELEGRAM_CHAT_ID`   | ❌ 否 | 接收推送的 Telegram Chat ID                                                |
 | `PUSH_LEVEL`         | ❌ 否 | 推送级别：`fail_only`（默认，仅失败推送）或 `all`（每次均推送）            |
-| `EXCHANGE_PLAN`      | ❌ 否 | 积分自动兑换计划（#11）：`plan500`（默认，500 分自动兑换 100 天）、`plan200`（200 分→30 天）、`plan100`（100 分→10 天）或 `off`（关闭）。兑换结果即使 `PUSH_LEVEL=fail_only` 也会推送。 |
+| `EXCHANGE_PLAN`      | ❌ 否 | Actions Variable：本 Fork 使用 `smart` 智能续期；仍支持 `plan500`（上游默认）、`plan200`、`plan100` 或 `off`。Bark 正常兑换保持静默，其他推送渠道保留上游行为。 |
 
 ### 🎁 积分自动兑换（#11）
 
