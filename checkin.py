@@ -114,6 +114,25 @@ def is_normal_checkin_result(result):
     return result.get('code') == 0
 
 
+def is_cookie_error(result):
+    """Recognize explicit login rejection, not generic HTTP/network failures."""
+    if not isinstance(result, dict):
+        return False
+    message = str(result.get('message', '')).strip().lower().rstrip('.!。！')
+    return message in {
+        '没有权限', '未登录', '请先登录', '登录已过期', '登录失效',
+        'unauthorized', 'cookie expired', 'session expired',
+        'not logged in', 'please login', 'please log in',
+    }
+
+
+def set_failure_reason(reason):
+    """Export only our fixed diagnostic category, never API text or secrets."""
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(f'failure_reason={reason}\n')
+
+
 def checkin_with_retry(client, attempts=3, delay_seconds=60):
     """Retry transient/unknown check-in failures without sending duplicate alerts."""
     attempts = max(1, attempts)
@@ -121,6 +140,9 @@ def checkin_with_retry(client, attempts=3, delay_seconds=60):
 
     for attempt in range(1, attempts + 1):
         last_result = client.checkin()
+        if is_cookie_error(last_result):
+            log('❌ 登录凭据被拒绝，请更新 GLADOS_COOKIE；停止无效重试')
+            return last_result, False
         if is_normal_checkin_result(last_result):
             return last_result, True
 
@@ -144,6 +166,7 @@ class GLaDOS:
         self.exchange_result = ""
         self.plan = "?"
         self.available_plans = {}
+        self.cookie_rejected = False
 
     def req(self, method, path, data=None, form=False):
         """带自动域名切换的请求；form=True 时以表单提交（兑换接口要求）"""
@@ -170,7 +193,10 @@ class GLaDOS:
 
                 if resp.status_code == 200:
                     self.domain = d # Remember working domain
-                    return resp.json()
+                    result = resp.json()
+                    if is_cookie_error(result):
+                        self.cookie_rejected = True
+                    return result
                 log(f"⚠️ {d} 返回 HTTP {resp.status_code}")
             except (requests.RequestException, ValueError) as e:
                 # Invalid-header exceptions can include the Cookie itself.
@@ -401,6 +427,7 @@ def main():
     log("🚀 2026 GLaDOS Checkin Starting...")
     cookies = get_cookies()
     if not cookies:
+        set_failure_reason('cookie_missing')
         return 1
 
     exchange_plan = get_exchange_plan()
@@ -417,6 +444,7 @@ def main():
     exchange_events = 0
     account_errors = 0
     renewal_warnings = []
+    cookie_rejected = False
 
     for i, cookie in enumerate(cookies, 1):
         g = GLaDOS(cookie)
@@ -445,6 +473,7 @@ def main():
             g.exchange_result = '⚠️ 签到或账户查询失败，跳过兑换'
 
         account_errors += int(has_error)
+        cookie_rejected = cookie_rejected or is_cookie_error(res) or g.cookie_rejected
         warning = renewal_warning(g)
         if warning:
             renewal_warnings.append(f'账号 {i}: {warning}')
@@ -484,6 +513,8 @@ def main():
     # Exchange outcomes (success or failure) are worth notifying even when
     # PUSH_LEVEL=fail_only, otherwise an always-failing exchange stays silent.
     # Fixed-format warning only: never put API responses or credentials in outputs.
+    if cookie_rejected:
+        set_failure_reason('cookie')
     if renewal_warnings and os.environ.get('GITHUB_OUTPUT'):
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
             output.write('renewal_warning=' + ' / '.join(renewal_warnings) + '\n')

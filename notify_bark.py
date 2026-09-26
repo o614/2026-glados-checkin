@@ -79,6 +79,13 @@ def main():
     run_url = f'{server}/{repo}/actions/runs/{run_id}' if repo and run_id else ''
     if reason == 'test':
         title, body = 'GLaDOS 通知测试', 'Bark 已接通。这是一条测试通知，不代表签到失败。'
+    elif reason == 'cookie':
+        title = 'GLaDOS Cookie 失效或登录已过期'
+        body = ('服务明确返回「没有权限/未登录」等登录拒绝信息。请重新登录 glados.cloud，'
+                '复制请求头中的完整 Cookie（保留 gld:sess、koa:sess 等全部登录字段），'
+                '更新仓库 GLADOS_COOKIE Secret 后重新运行。此提示不代表账号被封。')
+    elif reason == 'cookie_missing':
+        title, body = 'GLaDOS 缺少 Cookie 配置', '未读取到 GLADOS_COOKIE，请检查仓库 Actions Secrets。'
     elif reason == 'renewal':
         title = 'GLaDOS 续期风险'
         body = os.environ.get('RENEWAL_WARNING', '剩余天数较少且积分不足，请检查续期。')

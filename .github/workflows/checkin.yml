@@ -47,7 +47,7 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Run Tests
-        run: python -m unittest discover -s tests -v
+        run: python -m unittest discover -s tests -b -v
 
       - name: Run Checkin
         id: checkin
@@ -70,5 +70,5 @@ jobs:
         run: python notify_bark.py
         env:
           BARK_URL: ${{ secrets.BARK_URL }}
-          BARK_REASON: ${{ job.status == 'failure' && 'failure' || inputs.bark_test == true && 'test' || 'renewal' }}
+          BARK_REASON: ${{ job.status == 'failure' && (steps.checkin.outputs.failure_reason || 'failure') || inputs.bark_test == true && 'test' || 'renewal' }}
           RENEWAL_WARNING: ${{ steps.checkin.outputs.renewal_warning }}

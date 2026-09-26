@@ -96,7 +96,7 @@ class MainFlowTests(unittest.TestCase):
 
     def test_failed_checkin_retries_three_times_and_never_exchanges(self):
         g = client(500)
-        g.checkin.return_value = {'code': -2, 'message': 'Unauthorized'}
+        g.checkin.return_value = {'code': 2, 'message': 'Temporary service error'}
         self.assertEqual(self.run_main(g), 1)
         self.assertEqual(g.checkin.call_count, 3)
         g.exchange.assert_not_called()
